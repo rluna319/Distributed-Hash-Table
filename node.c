@@ -24,8 +24,16 @@
     #include <arpa/inet.h>  // for inet_pton on linux
 #endif
 
+typedef enum {
+    PUT_FORWARD,
+    GET_FORWARD,
+    WHAT_X,
+    GET_REPLY_X,
+    PUT_REPLY_X
+} MsgType;
+
 typedef struct app_msg{
-    unsigned char* msg_id;
+    MsgType msg_id;
     unsigned int key;
     unsigned int value;
     char * ip_addr;
@@ -383,7 +391,7 @@ static void manage_node_communication(      const char *ip,
                     printf("Message received from %s:%d\n", inet_ntoa(sender_addr.sin_addr), ntohs(sender_addr.sin_port));
 
                     // process message
-                    if (strcmp("PUT_FORWARD", msg->msg_id) != 0){   // PUT_FORWARD msg received from another node
+                    if (msg->msg_id == PUT_FORWARD){   // PUT_FORWARD msg received from another node
 
                         if (node_hash(msg->key) == node_id){    // key is destined for this node
 
@@ -431,7 +439,7 @@ static void manage_node_communication(      const char *ip,
 
                             // prepare data
                             app_msg_t *what_x = malloc(sizeof(app_msg_t));
-                            what_x->msg_id = htons("WHAT_X");
+                            what_x->msg_id = htons(WHAT_X);
                             what_x->key = htons(msg->key);
                             what_x->value = NULL;       // don't have it
                             what_x->ip_addr = NULL;     // connect() will provide this
@@ -459,7 +467,7 @@ static void manage_node_communication(      const char *ip,
 
                             // set up message
                             app_msg_t *put_fwd = malloc(sizeof(app_msg_t));
-                            put_fwd->msg_id = "PUT_FORWARD";
+                            put_fwd->msg_id = PUT_FORWARD;
                             put_fwd->key = key;
                             put_fwd->value = NULL;      // value remains "secret" until TCP connection established with target node
                             put_fwd->ip_addr = ip;
@@ -478,7 +486,7 @@ static void manage_node_communication(      const char *ip,
 
                         }
 
-                    } else if (strcmp("GET_FORWARD", msg->msg_id) != 0){    // GET_FORWARD msg received from another node
+                    } else if (msg->msg_id == GET_FORWARD){    // GET_FORWARD msg received from another node
                         
                         if (node_hash(msg->key) == node_id){
                             
@@ -523,7 +531,7 @@ static void manage_node_communication(      const char *ip,
 
                             // prepare data
                             app_msg_t *get_reply_x = malloc(sizeof(app_msg_t));
-                            get_reply_x->msg_id = htons("GET_REPLY_X");
+                            get_reply_x->msg_id = htons(GET_REPLY_X);
                             get_reply_x->key = htons(msg->key);
                             get_reply_x->value = htons(msg->value);
                             get_reply_x->ip_addr = NULL;     // connect() will provide this
@@ -549,7 +557,7 @@ static void manage_node_communication(      const char *ip,
 
                             // set up message
                             app_msg_t *get_fwd = malloc(sizeof(app_msg_t));
-                            get_fwd->msg_id = "GET_FORWARD";
+                            get_fwd->msg_id = GET_FORWARD;
                             get_fwd->key = key;
                             get_fwd->value = NULL;      // value doesn't get stored here as it is unknown
                             get_fwd->ip_addr = ip;
@@ -615,14 +623,14 @@ static void manage_node_communication(      const char *ip,
                 }
 
                 // handle tcp related messages
-                if (strcmp("WHAT_X", msg->msg_id) != 0){ // send back PUT_REPLY_X
+                if (msg->msg_id ==  WHAT_X){ // send back PUT_REPLY_X
 
                     // double check we have the key value pair
                     if (search(hash_table, key) != NULL){   // if we do
                         
                         // prepare data
                         app_msg_t *put_reply_x = malloc(sizeof(app_msg_t));
-                        put_reply_x->msg_id = htons("PUT_REPLY_X");
+                        put_reply_x->msg_id = htons(PUT_REPLY_X);
                         put_reply_x->key = htons(msg->key);
                         put_reply_x->value = htons(search(hash_table, key));
                         put_reply_x->ip_addr = NULL;
@@ -640,11 +648,11 @@ static void manage_node_communication(      const char *ip,
                         free(put_reply_x);  // free the malloc
                     }
 
-                } else if (strcmp("GET_REPLY_X", msg->msg_id) != 0){
+                } else if (msg->msg_id == GET_REPLY_X){
 
                     printf("GET request succeeded for Key = %i. Value = %i\n", msg->key, msg->value);
 
-                } else if (strcmp("PUT_REPLY_X", msg->msg_id) != 0){
+                } else if (msg->msg_id == PUT_REPLY_X){
 
                     // double check we are the correct node
                     if (node_hash(msg->key) == node_id){
@@ -699,7 +707,7 @@ static void manage_node_communication(      const char *ip,
 
                         // set up message
                         app_msg_t *msg = malloc(sizeof(app_msg_t));
-                        msg->msg_id = "PUT_FORWARD";
+                        msg->msg_id = PUT_FORWARD;
                         msg->key = key;
                         msg->value = NULL;      // value remains "secret" until TCP connection established with target node
                         msg->ip_addr = ip;
@@ -742,7 +750,7 @@ static void manage_node_communication(      const char *ip,
 
                         // set up message
                         app_msg_t *msg = malloc(sizeof(app_msg_t));
-                        msg->msg_id = "GET_FORWARD";
+                        msg->msg_id = GET_FORWARD;
                         msg->key = key;
                         msg->value = NULL;      // value doesn't get stored here as it is unknown
                         msg->ip_addr = ip;
