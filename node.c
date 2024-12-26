@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <string.h>
 #include <stdbool.h>
+#include <limits.h>
 
 // had to add these in for 'fd_set'...instructor didn't include them in his...dumb...
 #include <sys/select.h>
@@ -46,7 +47,7 @@ typedef struct HashTable {
 } HashTable;
 
 static unsigned int node_hash(unsigned int key){
-    return (key * 2654435761U) % NODE_COUNT;
+    return ((key * 2654435761U) % NODE_COUNT) + 1;  // adding 1 adjusts the range to [1, NODE_COUNT]
 }
 
 static unsigned int table_hash(unsigned int key){
@@ -115,12 +116,12 @@ static unsigned int search(HashTable *table, const unsigned int *key){
     HT_Node *current = table->buckets[index];
 
     while (current != NULL){
-        if (current->key = key){
+        if (current->key == key){
             return current->value;
         }
         current = current->next;
     }
-    return NULL;    // key not found
+    return UINT_MAX;    // key not found retrun max value for uint as sentinel value
 }
 
 static void delete(HashTable *table, const unsigned int *key){
