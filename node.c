@@ -33,11 +33,11 @@ typedef enum {
 } MessageType;
 
 typedef struct app_msg{
-    MessageType msg_id;
-    unsigned int key;
-    unsigned int value;
-    char * ip_addr;
-    unsigned int tcp_port;
+    MessageType msg_id;         // 4 bytes
+    unsigned int key;           // 4 bytes
+    unsigned int value;         // 4 bytes
+    struct in_addr ip_addr;     // 4 bytes  (binary format for IPv4) (8 bytes for IPv6)
+    unsigned int tcp_port;      // 4 bytes
 } app_msg_t;
 
 /* Hash Table */
@@ -164,6 +164,8 @@ static void delete(HashTable *table, const unsigned int *key){
 /* End Hash Table */
 
 
+#define BUFFER_SIZE 24    // 24 bytes maximum for app_msg_t (adding 4 bytes for forward compatibility with IPv6)
+#define INPUT_BUFFER_SIZE 32    // 27 bytes maximum expected for PUT request (round up to 32)
 
 // helper function to initialize a new app_msg_t
 app_msg_t *init_app_msg(MessageType msg_id){
@@ -176,45 +178,18 @@ app_msg_t *init_app_msg(MessageType msg_id){
     return msg;
 }
 
-// helper function to free up memory allocated for an app_msg_t
-void free_app_msg(app_msg_t* msg) {
-    if (msg) {
-        free(msg->ip_addr); // Free dynamically allocated IP address
-        free(msg);
-    }
-}
-
-
-app_msg_t* create_put_forward(unsigned int key, const char* ip_addr, unsigned int tcp_port) {
+app_msg_t* create_put_forward(unsigned int key, struct in_addr ip_addr, unsigned int tcp_port) {
     app_msg_t* msg = init_app_msg(PUT_FORWARD);
     msg->key = key;
-
-    // Allocate and copy IP address
-    if (ip_addr) {
-        msg->ip_addr = strdup(ip_addr);
-        if (!msg->ip_addr) {
-            perror("Failed to allocate memory for ip_addr");
-            free(msg);
-            exit(EXIT_FAILURE);
-        }
-    }
+    msg->ip_addr = ip_addr;
     msg->tcp_port = tcp_port;
     return msg;
 }
 
-app_msg_t* create_get_forward(unsigned int key, const char* ip_addr, unsigned int tcp_port) {
+app_msg_t* create_get_forward(unsigned int key, struct in_addr ip_addr, unsigned int tcp_port) {
     app_msg_t* msg = init_app_msg(GET_FORWARD);
     msg->key = key;
-
-    // Allocate and copy IP address
-    if (ip_addr) {
-        msg->ip_addr = strdup(ip_addr);
-        if (!msg->ip_addr) {
-            perror("Failed to allocate memory for ip_addr");
-            free(msg);
-            exit(EXIT_FAILURE);
-        }
-    }
+    msg->ip_addr = ip_addr;
     msg->tcp_port = tcp_port;
     return msg;
 }
@@ -239,6 +214,85 @@ app_msg_t* create_what_x(unsigned int key) {
     return msg;
 }
 
+
+
+
+
+
+
+size_t serialize_app_msg(const app_msg_t* message, char* buffer, size_t buffer_size){
+
+    // check buffer size
+    if (buffer_size < sizeof(app_msg_t)){
+        fprintf(stderr, "Buffer to small for serialization\n");
+        return 0;
+    }
+
+    size_t offset = 0;
+
+    // serialize fields into the buffer and convert from host byte order to network byte order
+    unsigned int msg_id_net = htonl(message->msg_id);
+    memcpy(buffer + offset, &msg_id_net, sizeof(msg_id_net));                               // msg_id
+    offset += sizeof(msg_id_net);
+
+    unsigned int key_net = htonl(message->key);
+    memcpy(buffer + offset, &key_net, sizeof(key_net));                                     // key
+    offset += sizeof(key_net);
+
+    unsigned int value_net = htonl(message->value);
+    memcpy(buffer + offset, &value_net, sizeof(value_net));                                 // value
+    offset += sizeof(value_net);
+
+    unsigned int ip_net = htonl(message->ip_addr.s_addr);
+    memcpy(buffer + offset, &ip_net, sizeof(ip_net));                                       // ip address
+    offset += sizeof(ip_net);
+
+    unsigned int tcp_net = htonl(message->tcp_port);
+    memcpy(buffer + offset, &tcp_net, sizeof(tcp_net));                                     // tcp port
+    offset += sizeof(tcp_net);
+
+    return offset;      // return total number of bytes written.
+
+}
+
+app_msg_t *deserialize_app_msg(const char* buffer, size_t buffer_size){
+
+    // allocate memory for deserialization
+    app_msg_t* message = calloc(1, sizeof(app_msg_t));
+    if (!message){
+        perror("Failed to allocate memory for deserialized app message.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    size_t offset = 0;
+
+    // deserialize fields from the buffer and convert from network byte order to host byte order
+    unsigned int msg_id_net;
+    memcpy(&msg_id_net, buffer + offset, sizeof(msg_id_net));                               // msg_id
+    message->msg_id = ntohl(msg_id_net);
+    offset += sizeof(msg_id_net);
+
+    unsigned int key_net;
+    memcpy(&key_net, buffer + offset, sizeof(key_net));                                     // key
+    message->key = ntohl(key_net);
+    offset += sizeof(key_net);
+
+    unsigned int value_net;
+    memcpy(&value_net, buffer + offset, sizeof(value_net));                                 // value
+    message->value = ntohl(value_net);
+    offset += sizeof(value_net);
+
+    unsigned int ip_net;
+    memcpy(&ip_net, buffer + offset, sizeof(ip_net));                                       // ip address
+    message->ip_addr.s_addr = ntohl(ip_net);
+    offset += sizeof (ip_net);
+
+    unsigned int tcp_net;
+    memcpy(&tcp_net, buffer + offset, sizeof(tcp_net));                                     // tcp port
+    offset += sizeof(tcp_net);
+
+    return message;
+}
 
 
 
@@ -302,14 +356,6 @@ static unsigned long ip_to_int(const char *ip_str){
     // conver the binary ip to an integer
     return ntohl(sa.sin_addr.s_addr);   // convert to host byte order (inet_pton returns in network byte order)
 }
-
-
-
-
-
-
-
-
 
 
 
@@ -441,42 +487,35 @@ static void manage_node_communication(      const char *ip,
 
             if (fd == udp_sock_fd && FD_ISSET(fd, &readyfds)){  
 
-                char buffer[sizeof(app_msg_t)];
+                char buffer[BUFFER_SIZE];
                 struct sockaddr_in sender_addr;
                 socklen_t addr_len = sizeof(sender_addr);
 
-                ssize_t received_len = recvfrom(udp_sock_fd, buffer, sizeof(buffer), 0, (struct sockaddr *)&sender_addr, &addr_len);
+                ssize_t received_len = recvfrom(udp_sock_fd, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&sender_addr, &addr_len);
 
                 if (received_len < 0){
                     perror("Error receiving data\n");
-                } else if (received_len != sizeof(app_msg_t)){
+                } else if (received_len != BUFFER_SIZE){
                     printf("Invalid message size: %zd bytes (expected %zu bytes)\n");
                 } else {
 
                     // deserialize the buffer into the app_msg_t structure
-                    app_msg_t *msg = (app_msg_t *)buffer;
-
-                    // convert fields from network byte order to host byte order
-                    msg->msg_id = ntohl(msg->msg_id);
-                    msg->key = ntohl(msg->key);
-                    msg->value = ntohl(msg->value);
-                    msg->ip_addr = ntohl(msg->ip_addr);
-                    msg->tcp_port = ntohl(msg->tcp_port);
+                    app_msg_t *recv_msg = deserialize_app_msg(buffer, BUFFER_SIZE);
 
                     // print to console
                     printf("Received Message:\n");
-                    printf("  Msg ID:    %u\n", msg->msg_id);
-                    printf("  Key:       %u\n", msg->key);
-                    printf("  Value:     %u\n", msg->value);
-                    printf("  IP Addr:   %s\n", inet_ntoa(*(struct in_addr *)&msg->ip_addr));
-                    printf("  TCP Port:  %u\n", msg->tcp_port);
+                    printf("  Msg ID:    %u\n", recv_msg->msg_id);
+                    printf("  Key:       %u\n", recv_msg->key);
+                    printf("  Value:     %u\n", recv_msg->value);
+                    printf("  IP Addr:   %s\n", inet_ntoa(*(struct in_addr *)&recv_msg->ip_addr));
+                    printf("  TCP Port:  %u\n", recv_msg->tcp_port);
                     // Print sender details
                     printf("Message received from %s:%d\n", inet_ntoa(sender_addr.sin_addr), ntohs(sender_addr.sin_port));
 
                     // process message
-                    if (msg->msg_id == PUT_FORWARD){   // PUT_FORWARD msg received from another node
+                    if (recv_msg->msg_id == PUT_FORWARD){   // PUT_FORWARD msg received from another node
 
-                        if (node_hash(msg->key) == node_id){    // key is destined for this node
+                        if (node_hash(recv_msg->key) == node_id){    // key is destined for this node
 
                             /**
                              * Need to send WHAT_X over TCP to the originator to get the value
@@ -490,7 +529,9 @@ static void manage_node_communication(      const char *ip,
                             dest.sin_port = htons(tcp_port);
 
                             // Resolve the hostname to an IP address
-                            struct hostent *host = gethostbyname(msg->ip_addr);
+                            char ip_str[INET_ADDRSTRLEN];
+                            inet_ntop(AF_INET, &recv_msg->ip_addr, ip_str, sizeof(ip_str));  // convert IP to string and store in ip_str
+                            struct hostent *host = gethostbyname(ip_str);
                             if (host == NULL) {
                                 fprintf(stderr, "Error resolving hostname\n");
                                 exit(EXIT_FAILURE);
@@ -521,15 +562,20 @@ static void manage_node_communication(      const char *ip,
                             }
 
                             // prepare data
-                            app_msg_t *what_x = create_what_x(msg->key);
+                            app_msg_t *what_x = create_what_x(recv_msg->key);
+                            size_t serialized_size = serialize_app_msg(what_x, buffer, BUFFER_SIZE);
+                            if (serialized_size > BUFFER_SIZE){
+                                fprintf(stderr, "Serialized response for WHAT_X exceeds buffer size\n");
+                                exit(EXIT_FAILURE);
+                            }
 
                             // send data
-                            ssize_t sent_recv_bytes = sendto(sockfd, &what_x, sizeof(app_msg_t), 0, (struct sockaddr *)&dest, sizeof(struct sockaddr));
+                            ssize_t sent_recv_bytes = sendto(sockfd, buffer, serialized_size, 0, (struct sockaddr *)&dest, sizeof(struct sockaddr));
 
                             if (sent_recv_bytes < 0){
                                 perror("WHAT_X send failed.\n");
                             } else {
-                                printf("WHAT_X sent to %s:%u. %d bytes sent...\n", msg->ip_addr, msg->tcp_port, sent_recv_bytes);
+                                printf("WHAT_X sent to %s:%u. %d bytes sent...\n", recv_msg->ip_addr, recv_msg->tcp_port, sent_recv_bytes);
                             }
 
                             free_app_msg(what_x);   // free allocated memory
@@ -544,10 +590,15 @@ static void manage_node_communication(      const char *ip,
                             receiver_addr.sin_addr.s_addr = inet_addr(ip);
 
                             // set up message
-                            app_msg_t *put_fwd = create_put_forward(msg->key, msg->ip_addr, msg->tcp_port);
+                            app_msg_t *put_fwd = create_put_forward(recv_msg->key, recv_msg->ip_addr, recv_msg->tcp_port);
+                            size_t serialized_size = serialize_app_msg(put_fwd, buffer, BUFFER_SIZE);
+                            if (serialized_size > BUFFER_SIZE){
+                                fprintf(stderr, "Serialized response for PUT_FORWARD exceeds buffer size\n");
+                                exit(EXIT_FAILURE);
+                            }
 
                             // send message
-                            ssize_t sent_bytes = sendto(udp_sock_fd, put_fwd, sizeof(app_msg_t), 0, (struct sockaddr *)&receiver_addr, sizeof(receiver_addr));
+                            ssize_t sent_bytes = sendto(udp_sock_fd, buffer, serialized_size, 0, (struct sockaddr *)&receiver_addr, sizeof(receiver_addr));
 
                             if (sent_bytes < 0){
                                 perror("PUT_FORWARD send failed\n");
@@ -555,13 +606,12 @@ static void manage_node_communication(      const char *ip,
                                 printf("Message forwarded to %s:%u\n", ip, successor_udp);
                             }
 
-                            free_app_msg(put_fwd);  // free allocated memory
-
+                            free(put_fwd);  // free allocated memory
                         }
 
-                    } else if (msg->msg_id == GET_FORWARD){    // GET_FORWARD msg received from another node
+                    } else if (recv_msg->msg_id == GET_FORWARD){    // GET_FORWARD msg received from another node
                         
-                        if (node_hash(msg->key) == node_id){
+                        if (node_hash(recv_msg->key) == node_id){
                             
                             // send GET_REPLY_X to originator over TCP
 
@@ -572,7 +622,9 @@ static void manage_node_communication(      const char *ip,
                             dest.sin_port = htons(tcp_port);
 
                             // Resolve the hostname to an IP address
-                            struct hostent *host = gethostbyname(msg->ip_addr);
+                            char ip_str[INET_ADDRSTRLEN];
+                            inet_ntop(AF_INET, &recv_msg->ip_addr, ip_str, sizeof(ip_str));  // convert IP to string and store in ip_str
+                            struct hostent *host = gethostbyname(ip_str);
                             if (host == NULL) {
                                 fprintf(stderr, "Error resolving hostname\n");
                                 exit(EXIT_FAILURE);
@@ -603,18 +655,23 @@ static void manage_node_communication(      const char *ip,
                             }
 
                             // prepare data
-                            app_msg_t *get_reply_x = create_get_reply_x(msg->key, search(hash_table, msg->key));
+                            app_msg_t *get_reply_x = create_get_reply_x(recv_msg->key, search(hash_table, recv_msg->key));
+                            size_t serialized_size = serialize_app_msg(get_reply_x, buffer, BUFFER_SIZE);
+                            if (serialized_size > BUFFER_SIZE){
+                                fprintf(stderr, "Serialized response for GET_REPLY_X exceeds buffer size\n");
+                                exit(EXIT_FAILURE);
+                            }
 
                             // send data
-                            ssize_t sent_recv_bytes = sendto(sockfd, &get_reply_x, sizeof(app_msg_t), 0, (struct sockaddr *)&dest, sizeof(struct sockaddr));
+                            ssize_t sent_recv_bytes = sendto(sockfd, buffer, serialized_size, 0, (struct sockaddr *)&dest, sizeof(struct sockaddr));
 
                             if (sent_recv_bytes < 0){
                                 perror("GET_REPLY_X send failed.\n");
                             } else {
-                                printf("GET_REPLY_X sent to %s:%u. %d bytes sent...\n", msg->ip_addr, msg->tcp_port, sent_recv_bytes);
+                                printf("GET_REPLY_X sent to %s:%u. %d bytes sent...\n", recv_msg->ip_addr, recv_msg->tcp_port, sent_recv_bytes);
                             }
 
-                            free_app_msg(get_reply_x);  // free allocated memory
+                            free(get_reply_x);  // free allocated memory
 
                         } else {    // GET_FORWARD to successor node over UDP
 
@@ -626,10 +683,15 @@ static void manage_node_communication(      const char *ip,
                             receiver_addr.sin_addr.s_addr = inet_addr(ip);
 
                             // set up message
-                            app_msg_t *get_fwd = create_get_forward(msg->key, msg->ip_addr, msg->tcp_port);
+                            app_msg_t *get_fwd = create_get_forward(recv_msg->key, recv_msg->ip_addr, recv_msg->tcp_port);
+                            size_t serialized_size = serialize_app_msg(get_fwd, buffer, BUFFER_SIZE);
+                            if (serialized_size > BUFFER_SIZE){
+                                fprintf(stderr, "Serialized response for GET_FORWARD exceeds buffer size\n");
+                                exit(EXIT_FAILURE);
+                            }
 
                             // send message
-                            ssize_t sent_bytes = sendto(udp_sock_fd, get_fwd, sizeof(app_msg_t), 0, (struct sockaddr *)&receiver_addr, sizeof(receiver_addr));
+                            ssize_t sent_bytes = sendto(udp_sock_fd, buffer, serialized_size, 0, (struct sockaddr *)&receiver_addr, sizeof(receiver_addr));
 
                             if (sent_bytes < 0){
                                 perror("GET_FORWARD send failed\n");
@@ -643,6 +705,8 @@ static void manage_node_communication(      const char *ip,
                     } else {
                         perror("Invalid message type for UDP communication received...\n");
                     }
+
+                    free(recv_msg); // free allocated memory
                 }
 
             /*** TCP COMMUNICATION ***/
@@ -650,36 +714,29 @@ static void manage_node_communication(      const char *ip,
             } else if (fd != tcp_sock_fd && fd != udp_sock_fd && FD_ISSET(fd, &readyfds)){
 
                 // prepare message buffer
-                char buffer[sizeof(app_msg_t)];
-                memset(buffer, 0, sizeof(buffer));
+                char buffer[BUFFER_SIZE];
+                memset(buffer, 0, BUFFER_SIZE);
 
                 // store client socket information
                 struct sockaddr_in sender_addr;
                 socklen_t addr_len = sizeof(sender_addr);
 
                 // get message
-                ssize_t received_len = recvfrom(fd, buffer, sizeof(buffer), 0, (struct sockaddr *)&sender_addr, &addr_len);
+                ssize_t received_len = recvfrom(fd, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&sender_addr, &addr_len);
 
                 // print info to console
                 printf("Server received %d bytes from client %s: %u\n", received_len, inet_ntoa(sender_addr.sin_addr), ntohs(sender_addr.sin_port));
 
                 // deserialize the buffer into the app_msg_t structure
-                app_msg_t *msg = (app_msg_t *)buffer;
-
-                // convert fields from network byte order to host byte order
-                msg->msg_id = ntohl(msg->msg_id);
-                msg->key = ntohl(msg->key);
-                msg->value = ntohl(msg->value);
-                msg->ip_addr = ntohl(msg->ip_addr);
-                msg->tcp_port = ntohl(msg->tcp_port);
+                app_msg_t *recv_msg = deserialize_app_msg(buffer, BUFFER_SIZE);
 
                 // print message to console
                 printf("Received Message:\n");
-                printf("  Msg ID:    %u\n", msg->msg_id);
-                printf("  Key:       %u\n", msg->key);
-                printf("  Value:     %u\n", msg->value);
-                printf("  IP Addr:   %s\n", inet_ntoa(*(struct in_addr *)&msg->ip_addr));
-                printf("  TCP Port:  %u\n", msg->tcp_port);
+                printf("  Msg ID:    %u\n", recv_msg->msg_id);
+                printf("  Key:       %u\n", recv_msg->key);
+                printf("  Value:     %u\n", recv_msg->value);
+                printf("  IP Addr:   %s\n", inet_ntoa(*(struct in_addr *)&recv_msg->ip_addr));
+                printf("  TCP Port:  %u\n", recv_msg->tcp_port);
 
                 // if server receives emtpy message from client, server may close the conection and wait for fresh new connection from client.
                 if (received_len == 0){
@@ -688,21 +745,21 @@ static void manage_node_communication(      const char *ip,
                 }
 
                 // handle tcp related messages
-                if (msg->msg_id ==  WHAT_X){ // send back PUT_REPLY_X
+                if (recv_msg->msg_id ==  WHAT_X){ // send back PUT_REPLY_X
 
                     // double check we have the key value pair
                     if (search(hash_table, key) != NULL){   // if we do
                         
                         // prepare data
-                        app_msg_t *put_reply_x = malloc(sizeof(app_msg_t));
-                        put_reply_x->msg_id = htons(PUT_REPLY_X);
-                        put_reply_x->key = htons(msg->key);
-                        put_reply_x->value = htons(search(hash_table, key));
-                        put_reply_x->ip_addr = NULL;
-                        put_reply_x->tcp_port = NULL;
+                        app_msg_t *put_reply_x = create_put_reply_x(key, value);
+                        size_t serialized_size = serialize_app_msg(put_reply_x, buffer, BUFFER_SIZE);
+                        if (serialized_size > BUFFER_SIZE){
+                            fprintf(stderr, "Serialized response for PUT_REPLY_X exceeds buffer size\n");
+                            exit(EXIT_FAILURE);
+                        }
 
                         // send data
-                        int sent_recv_bytes = sendto(fd, (char *)&put_reply_x, sizeof(put_reply_x), 0, (struct sockaddr *)&sender_addr, sizeof(struct sockaddr));
+                        int sent_recv_bytes = sendto(fd, buffer, serialized_size, 0, (struct sockaddr *)&sender_addr, sizeof(struct sockaddr));
 
                         if (sent_recv_bytes < 0){
                             perror("PUT_REPLY_X failed...\n");
@@ -710,27 +767,29 @@ static void manage_node_communication(      const char *ip,
                             printf("PUT_REPLY_X sent to %s:%u\n", inet_ntoa(sender_addr.sin_addr), ntohs(sender_addr.sin_port));
                         }
 
-                        free(put_reply_x);  // free the malloc
+                        free(put_reply_x);  // free allocated memory
                     }
 
-                } else if (msg->msg_id == GET_REPLY_X){
+                } else if (recv_msg->msg_id == GET_REPLY_X){
 
-                    printf("GET request succeeded for Key = %i. Value = %i\n", msg->key, msg->value);
+                    printf("GET request succeeded for Key = %i. Value = %i\n", recv_msg->key, recv_msg->value);
 
-                } else if (msg->msg_id == PUT_REPLY_X){
+                } else if (recv_msg->msg_id == PUT_REPLY_X){
 
                     // double check we are the correct node
-                    if (node_hash(msg->key) == node_id){
-                        insert(hash_table, msg->key, msg->value);
-                        printf("Inserted new key-value pair for Key = %i\n", msg->key);
+                    if (node_hash(recv_msg->key) == node_id){
+                        insert(hash_table, recv_msg->key, recv_msg->value);
+                        printf("Inserted new key-value pair for Key = %i\n", recv_msg->key);
                     } else {
-                        printf("Received PUT_REPLY_X for key = %i, but this is not the correct node for storage...\n", msg->key);
+                        printf("Received PUT_REPLY_X for key = %i, but this is not the correct node for storage...\n", recv_msg->key);
                     }
 
                 } else {
                     perror("Invalid message type for TCP communication received...\n");
                     break;
                 }
+
+                free(recv_msg); // free allocated memory
 
             }
 
@@ -742,8 +801,8 @@ static void manage_node_communication(      const char *ip,
 
         if (FD_ISSET(0, &readyfds)){  // data arrives from console (user input)
             
-            char input[256];
-            if (fgets(input, sizeof(input), stdin) != NULL){
+            char input[INPUT_BUFFER_SIZE];
+            if (fgets(input, INPUT_BUFFER_SIZE, stdin) != NULL){
 
                 if (strncmp(input, "PUT", 3) == 0){
                     
@@ -771,15 +830,18 @@ static void manage_node_communication(      const char *ip,
                         receiver_addr.sin_addr.s_addr = inet_addr(ip);
 
                         // set up message
-                        app_msg_t *msg = malloc(sizeof(app_msg_t));
-                        msg->msg_id = PUT_FORWARD;
-                        msg->key = key;
-                        msg->value = NULL;      // value remains "secret" until TCP connection established with target node
-                        msg->ip_addr = ip;
-                        msg->tcp_port = tcp_port;
+                        char buffer[BUFFER_SIZE];
+                        struct in_addr ip_addr;
+                        inet_pton(AF_INET, ip, &ip_addr);
+                        app_msg_t *put_fwd = create_put_forward(key, ip_addr, successor_udp);
+                        size_t serialized_size = serialize_app_msg(put_fwd, buffer, BUFFER_SIZE);
+                        if (serialized_size > BUFFER_SIZE){
+                            fprintf(stderr, "Serialized response for PUT_FORWARD exceeds buffer size\n");
+                            exit(EXIT_FAILURE);
+                        }
 
                         // send message
-                        ssize_t sent_bytes = sendto(udp_sock_fd, msg, sizeof(app_msg_t), 0, (struct sockaddr *)&receiver_addr, sizeof(receiver_addr));
+                        ssize_t sent_bytes = sendto(udp_sock_fd, buffer, serialized_size, 0, (struct sockaddr *)&receiver_addr, sizeof(receiver_addr));
 
                         if (sent_bytes < 0){
                             perror("PUT_FORWARD send failed\n");
@@ -787,7 +849,7 @@ static void manage_node_communication(      const char *ip,
                             printf("Message forwarded to %s:%u\n", ip, successor_udp);
                         }
 
-                        free(msg);
+                        free(put_fwd);
                     }
 
                 } else if (strncmp(input, "GET", 3) == 0){
@@ -814,15 +876,14 @@ static void manage_node_communication(      const char *ip,
                         receiver_addr.sin_addr.s_addr = inet_addr(ip);
 
                         // set up message
-                        app_msg_t *msg = malloc(sizeof(app_msg_t));
-                        msg->msg_id = GET_FORWARD;
-                        msg->key = key;
-                        msg->value = NULL;      // value doesn't get stored here as it is unknown
-                        msg->ip_addr = ip;
-                        msg->tcp_port = tcp_port;
+                        char buffer[BUFFER_SIZE];
+                        struct in_addr ip_addr;
+                        inet_pton(AF_INET, ip, &ip_addr);
+                        app_msg_t *get_fwd = create_get_forward(key, ip_addr, successor_udp);
+                        size_t serialized_size = serialize_app_msg(get_fwd, buffer, BUFFER_SIZE);
 
                         // send message
-                        ssize_t sent_bytes = sendto(udp_sock_fd, msg, sizeof(app_msg_t), 0, (struct sockaddr *)&receiver_addr, sizeof(receiver_addr));
+                        ssize_t sent_bytes = sendto(udp_sock_fd, buffer, serialized_size, 0, (struct sockaddr *)&receiver_addr, sizeof(receiver_addr));
 
                         if (sent_bytes < 0){
                             perror("GET_FORWARD send failed\n");
@@ -830,7 +891,7 @@ static void manage_node_communication(      const char *ip,
                             printf("Message forwarded to %s:%u\n", ip, successor_udp);
                         }
 
-                        free(msg);
+                        free(get_fwd);
 
                     }
 
