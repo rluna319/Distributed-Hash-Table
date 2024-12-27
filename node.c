@@ -24,6 +24,8 @@
     #include <arpa/inet.h>  // for inet_pton on linux
 #endif
 
+#define MAX_RETRIES 3   // max retries for incorrect input for PUT/GET requests
+
 typedef enum {
     PUT_FORWARD,
     GET_FORWARD,
@@ -215,8 +217,35 @@ app_msg_t* create_what_x(unsigned int key) {
 }
 
 
+// helper function to get valid unsgined integer from stdin
+static unsigned int get_valid_unsigned_int(const char* prompt){
+    char input[INPUT_BUFFER_SIZE];
+    char* endptr;
+    int retries = 0;
 
+    while(retries < MAX_RETRIES){
+        printf("%s", prompt);
+        if (fgets(input, sizeof(input), stdin) == NULL){
+            fprintf(stderr, "Error reading input. Please try again.\n");
+            retries++;
+            continue;
+        }
 
+        // remove newline character if present
+        input[strcspn(input, "\n")] = '\0';     // substitute with null
+
+        // convert input to integer
+        unsigned long value = strtoul(input, &endptr, 10);
+
+        // check if the input is a valid unsigned integer
+        if (*endptr == '\0' && value <= UINT_MAX){
+            return (unsigned int)value;
+        }
+
+        fprintf(stderr, "Invalid input. Please enter a positive number.\n");
+        retries++;
+    }
+}
 
 
 
@@ -444,8 +473,6 @@ static void manage_node_communication(      const char *ip,
     FD_SET(0, &masterfds);
 
     while(1){
-
-        int key = 0, value = 0;
 
         readyfds = masterfds;   // copy master set of FDs (select will remove any that aren't "ready") into set of ready FDs for select to filter through.
 
@@ -748,10 +775,10 @@ static void manage_node_communication(      const char *ip,
                 if (recv_msg->msg_id ==  WHAT_X){ // send back PUT_REPLY_X
 
                     // double check we have the key value pair
-                    if (search(hash_table, key) != NULL){   // if we do
+                    if (search(hash_table, recv_msg->key) != NULL){   // if we do
                         
                         // prepare data
-                        app_msg_t *put_reply_x = create_put_reply_x(key, value);
+                        app_msg_t *put_reply_x = create_put_reply_x(recv_msg->key, search(hash_table, recv_msg->value));
                         size_t serialized_size = serialize_app_msg(put_reply_x, buffer, BUFFER_SIZE);
                         if (serialized_size > BUFFER_SIZE){
                             fprintf(stderr, "Serialized response for PUT_REPLY_X exceeds buffer size\n");
@@ -806,15 +833,8 @@ static void manage_node_communication(      const char *ip,
 
                 if (strncmp(input, "PUT", 3) == 0){
                     
-                    printf("Enter key: ");
-                    fgets(atoi(key), sizeof(key), stdin);
-                    while (key < 0){
-                        printf("Must be a positive number...\n");
-                        printf("Enter key: ");
-                        fgets(atoi(key), sizeof(key), stdin);
-                    }
-                    printf("Enter value: ");
-                    fgets(atoi(value), sizeof(value), stdin);
+                    unsigned int key = get_valid_unsigned_int("Enter key: ");
+                    unsigned int value = get_valid_unsigned_int("Enter value: ");
 
                     if (node_hash(key) == node_id){    // store key and value in own hash table
                     
@@ -854,13 +874,7 @@ static void manage_node_communication(      const char *ip,
 
                 } else if (strncmp(input, "GET", 3) == 0){
                     
-                    printf("Enter key: ");
-                    fgets(atoi(key), sizeof(key), stdin);
-                    while (key < 0){
-                        printf("Must be a positive number...\n");
-                        printf("Enter key: ");
-                        fgets(atoi(key), sizeof(key), stdin);
-                    }
+                    unsigned int key = get_valid_unsigned_int("Enter key: ");
 
                     if (node_hash(key) == node_id){ // if this node is holding the key specified in the GET request from console
 
@@ -892,7 +906,6 @@ static void manage_node_communication(      const char *ip,
                         }
 
                         free(get_fwd);
-
                     }
 
                 } else {
