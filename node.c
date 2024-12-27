@@ -30,10 +30,10 @@ typedef enum {
     WHAT_X,
     GET_REPLY_X,
     PUT_REPLY_X
-} MsgType;
+} MessageType;
 
 typedef struct app_msg{
-    MsgType msg_id;
+    MessageType msg_id;
     unsigned int key;
     unsigned int value;
     char * ip_addr;
@@ -165,6 +165,81 @@ static void delete(HashTable *table, const unsigned int *key){
 
 
 
+// helper function to initialize a new app_msg_t
+app_msg_t *init_app_msg(MessageType msg_id){
+    app_msg_t* msg = calloc(1, sizeof(app_msg_t));
+    if (!msg) {
+        perror("Failed to allocate memory for app_msg_t");
+        exit(EXIT_FAILURE);
+    }
+    msg->msg_id = msg_id;
+    return msg;
+}
+
+// helper function to free up memory allocated for an app_msg_t
+void free_app_msg(app_msg_t* msg) {
+    if (msg) {
+        free(msg->ip_addr); // Free dynamically allocated IP address
+        free(msg);
+    }
+}
+
+
+app_msg_t* create_put_forward(unsigned int key, const char* ip_addr, unsigned int tcp_port) {
+    app_msg_t* msg = init_app_msg(PUT_FORWARD);
+    msg->key = key;
+
+    // Allocate and copy IP address
+    if (ip_addr) {
+        msg->ip_addr = strdup(ip_addr);
+        if (!msg->ip_addr) {
+            perror("Failed to allocate memory for ip_addr");
+            free(msg);
+            exit(EXIT_FAILURE);
+        }
+    }
+    msg->tcp_port = tcp_port;
+    return msg;
+}
+
+app_msg_t* create_get_forward(unsigned int key, const char* ip_addr, unsigned int tcp_port) {
+    app_msg_t* msg = init_app_msg(GET_FORWARD);
+    msg->key = key;
+
+    // Allocate and copy IP address
+    if (ip_addr) {
+        msg->ip_addr = strdup(ip_addr);
+        if (!msg->ip_addr) {
+            perror("Failed to allocate memory for ip_addr");
+            free(msg);
+            exit(EXIT_FAILURE);
+        }
+    }
+    msg->tcp_port = tcp_port;
+    return msg;
+}
+
+app_msg_t* create_put_reply_x(unsigned int key, unsigned int value) {
+    app_msg_t* msg = init_app_msg(PUT_REPLY_X);
+    msg->key = key;
+    msg->value = value;
+    return msg;
+}
+
+app_msg_t* create_get_reply_x(unsigned int key, unsigned int value) {
+    app_msg_t* msg = init_app_msg(GET_REPLY_X);
+    msg->key = key;
+    msg->value = value;
+    return msg;
+}
+
+app_msg_t* create_what_x(unsigned int key) {
+    app_msg_t* msg = init_app_msg(WHAT_X); // Initialize the message
+    msg->key = key; // Set only the key, as nothing else is needed
+    return msg;
+}
+
+
 
 
 
@@ -282,8 +357,16 @@ static void manage_node_communication(      const char *ip,
     udp_server_addr.sin_family = AF_INET;
     tcp_server_addr.sin_port = htons(tcp_port);
     udp_server_addr.sin_port = htons(udp_port);
-    tcp_server_addr.sin_addr.s_addr = htonl(ip);
-    udp_server_addr.sin_addr.s_addr = htonl(ip);
+
+    // convert IP address from string to binary format and store in server info
+    if (inet_pton(AF_INET, ip, &tcp_server_addr.sin_addr) <= 0){
+        perror("Invalid IP address for TCP server\n");
+        exit(EXIT_FAILURE);
+    }
+    if (inet_pton(AF_INET, ip, &udp_server_addr.sin_addr) <= 0){
+        perror("Invalid IP address for UDP server\n");
+        exit(EXIT_FAILURE);
+    }
 
     int addr_len = sizeof(struct sockaddr);
 
@@ -438,12 +521,7 @@ static void manage_node_communication(      const char *ip,
                             }
 
                             // prepare data
-                            app_msg_t *what_x = malloc(sizeof(app_msg_t));
-                            what_x->msg_id = htons(WHAT_X);
-                            what_x->key = htons(msg->key);
-                            what_x->value = NULL;       // don't have it
-                            what_x->ip_addr = NULL;     // connect() will provide this
-                            what_x->tcp_port = NULL;    // connect() will provide this
+                            app_msg_t *what_x = create_what_x(msg->key);
 
                             // send data
                             ssize_t sent_recv_bytes = sendto(sockfd, &what_x, sizeof(app_msg_t), 0, (struct sockaddr *)&dest, sizeof(struct sockaddr));
@@ -454,7 +532,7 @@ static void manage_node_communication(      const char *ip,
                                 printf("WHAT_X sent to %s:%u. %d bytes sent...\n", msg->ip_addr, msg->tcp_port, sent_recv_bytes);
                             }
 
-                            free(what_x);   // free malloc
+                            free_app_msg(what_x);   // free allocated memory
 
                         } else {    // PUT_FORWARD to successor node over UDP
 
@@ -466,12 +544,7 @@ static void manage_node_communication(      const char *ip,
                             receiver_addr.sin_addr.s_addr = inet_addr(ip);
 
                             // set up message
-                            app_msg_t *put_fwd = malloc(sizeof(app_msg_t));
-                            put_fwd->msg_id = PUT_FORWARD;
-                            put_fwd->key = key;
-                            put_fwd->value = NULL;      // value remains "secret" until TCP connection established with target node
-                            put_fwd->ip_addr = ip;
-                            put_fwd->tcp_port = tcp_port;
+                            app_msg_t *put_fwd = create_put_forward(msg->key, msg->ip_addr, msg->tcp_port);
 
                             // send message
                             ssize_t sent_bytes = sendto(udp_sock_fd, put_fwd, sizeof(app_msg_t), 0, (struct sockaddr *)&receiver_addr, sizeof(receiver_addr));
@@ -482,7 +555,7 @@ static void manage_node_communication(      const char *ip,
                                 printf("Message forwarded to %s:%u\n", ip, successor_udp);
                             }
 
-                            free(put_fwd);
+                            free_app_msg(put_fwd);  // free allocated memory
 
                         }
 
@@ -530,12 +603,7 @@ static void manage_node_communication(      const char *ip,
                             }
 
                             // prepare data
-                            app_msg_t *get_reply_x = malloc(sizeof(app_msg_t));
-                            get_reply_x->msg_id = htons(GET_REPLY_X);
-                            get_reply_x->key = htons(msg->key);
-                            get_reply_x->value = htons(msg->value);
-                            get_reply_x->ip_addr = NULL;     // connect() will provide this
-                            get_reply_x->tcp_port = NULL;    // connect() will provide this
+                            app_msg_t *get_reply_x = create_get_reply_x(msg->key, search(hash_table, msg->key));
 
                             // send data
                             ssize_t sent_recv_bytes = sendto(sockfd, &get_reply_x, sizeof(app_msg_t), 0, (struct sockaddr *)&dest, sizeof(struct sockaddr));
@@ -545,6 +613,8 @@ static void manage_node_communication(      const char *ip,
                             } else {
                                 printf("GET_REPLY_X sent to %s:%u. %d bytes sent...\n", msg->ip_addr, msg->tcp_port, sent_recv_bytes);
                             }
+
+                            free_app_msg(get_reply_x);  // free allocated memory
 
                         } else {    // GET_FORWARD to successor node over UDP
 
@@ -556,12 +626,7 @@ static void manage_node_communication(      const char *ip,
                             receiver_addr.sin_addr.s_addr = inet_addr(ip);
 
                             // set up message
-                            app_msg_t *get_fwd = malloc(sizeof(app_msg_t));
-                            get_fwd->msg_id = GET_FORWARD;
-                            get_fwd->key = key;
-                            get_fwd->value = NULL;      // value doesn't get stored here as it is unknown
-                            get_fwd->ip_addr = ip;
-                            get_fwd->tcp_port = tcp_port;
+                            app_msg_t *get_fwd = create_get_forward(msg->key, msg->ip_addr, msg->tcp_port);
 
                             // send message
                             ssize_t sent_bytes = sendto(udp_sock_fd, get_fwd, sizeof(app_msg_t), 0, (struct sockaddr *)&receiver_addr, sizeof(receiver_addr));
