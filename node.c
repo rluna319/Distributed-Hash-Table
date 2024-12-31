@@ -134,35 +134,36 @@ static unsigned int search(HashTable *table, const unsigned int *key){
     return UINT_MAX;    // key not found retrun max value for uint as sentinel value
 }
 
-static void delete(HashTable *table, const unsigned int *key){
-    unsigned int index = table_hash((unsigned int)*key);
+/* UNUSED */
+// static void delete(HashTable *table, const unsigned int *key){
+//     unsigned int index = table_hash((unsigned int)*key);
 
-    HT_Node *current = table->buckets[index];
-    HT_Node *prev = NULL;
+//     HT_Node *current = table->buckets[index];
+//     HT_Node *prev = NULL;
 
-    while (current != NULL && *(current->key) != *key){ // search till NULL or key is found
-        prev = current;
-        current = current->next;
-    }
+//     while (current != NULL && *(current->key) != *key){ // search till NULL or key is found
+//         prev = current;
+//         current = current->next;
+//     }
 
-    if (current == NULL){ // didn't find it
-        printf("Key not found : %i\n", (unsigned int)*key);
-        return;
-    }
+//     if (current == NULL){ // didn't find it
+//         printf("Key not found : %i\n", (unsigned int)*key);
+//         return;
+//     }
 
-    if (prev == NULL){  // found it (is it the head?)
-        table->buckets[index] = current->next;
-    } else {    // not the head
-        prev->next = current->next;
-    }
+//     if (prev == NULL){  // found it (is it the head?)
+//         table->buckets[index] = current->next;
+//     } else {    // not the head
+//         prev->next = current->next;
+//     }
 
-    free(current->key);
-    free(current->value);
-    free(current);
-    printf("Key deleted: %i`n", (unsigned int)*key);
+//     free(current->key);
+//     free(current->value);
+//     free(current);
+//     printf("Key deleted: %i`n", (unsigned int)*key);
 
-    return;
-}
+//     return;
+// }
 /* End Hash Table */
 
 
@@ -245,6 +246,8 @@ static unsigned int get_valid_unsigned_int(const char* prompt){
         fprintf(stderr, "Invalid input. Please enter a number > 0.\n");
         retries++;
     }
+
+    return UINT_MAX;    // return sentinal value if we reach max number of retries
 }
 
 
@@ -284,7 +287,7 @@ size_t serialize_app_msg(const app_msg_t* message, char* buffer, size_t buffer_s
 
 }
 
-app_msg_t *deserialize_app_msg(const char* buffer, size_t buffer_size){
+app_msg_t *deserialize_app_msg(const char* buffer){
 
     // allocate memory for deserialization
     app_msg_t* message = calloc(1, sizeof(app_msg_t));
@@ -360,32 +363,33 @@ static int is_valid_ip(const char *ip){
     #endif
 }
 
-static unsigned long ip_to_int(const char *ip_str){
-    struct sockaddr_in sa;
+/* UNUSED */
+// static unsigned long ip_to_int(const char *ip_str){
+//     struct sockaddr_in sa;
 
-    #ifdef _WIN32
-        WSADATA wsaData;
-        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0){
-            printf("WSAStartup failed\n");
-            return 0;
-        }
-    #endif
+//     #ifdef _WIN32
+//         WSADATA wsaData;
+//         if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0){
+//             printf("WSAStartup failed\n");
+//             return 0;
+//         }
+//     #endif
 
-    // validate and conver the ip to binary format
-    if (inet_pton(AF_INET, ip_str, &(sa.sin_addr)) != 1){
-        #ifdef _WIN32
-            WSACleanup();
-        #endif
-        return 0;
-    }
+//     // validate and conver the ip to binary format
+//     if (inet_pton(AF_INET, ip_str, &(sa.sin_addr)) != 1){
+//         #ifdef _WIN32
+//             WSACleanup();
+//         #endif
+//         return 0;
+//     }
 
-    #ifdef _WIN32
-        WSACleanup();
-    #endif
+//     #ifdef _WIN32
+//         WSACleanup();
+//     #endif
 
-    // conver the binary ip to an integer
-    return ntohl(sa.sin_addr.s_addr);   // convert to host byte order (inet_pton returns in network byte order)
-}
+//     // conver the binary ip to an integer
+//     return ntohl(sa.sin_addr.s_addr);   // convert to host byte order (inet_pton returns in network byte order)
+// }
 
 
 
@@ -416,7 +420,7 @@ static void manage_node_communication(      const char *ip,
         exit(1);
     }
     // allow TCP master socket multiple connections
-    int opt = 1, tcp_comm_sock_fd = 0;
+    int opt = 1;
     if (setsockopt(tcp_sock_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, sizeof(opt)) < 0){
         printf("TCP socket creation failed for multiple connectinos\n");
         exit(EXIT_FAILURE);
@@ -426,7 +430,7 @@ static void manage_node_communication(      const char *ip,
     fd_set readyfds, masterfds;
 
     // server and client credentials for tcp and udp
-    struct sockaddr_in tcp_server_addr, tcp_client_addr, udp_server_addr, udp_client_addr;
+    struct sockaddr_in tcp_server_addr, tcp_client_addr, udp_server_addr;
 
     // specify server info
     tcp_server_addr.sin_family = AF_INET;
@@ -443,8 +447,6 @@ static void manage_node_communication(      const char *ip,
         perror("Invalid IP address for UDP server\n");
         exit(EXIT_FAILURE);
     }
-
-    int addr_len = sizeof(struct sockaddr);
 
     // Bind the server to the udp socket
     if (bind(udp_sock_fd, (struct sockaddr *)&udp_server_addr, sizeof(struct sockaddr)) == -1){
@@ -491,7 +493,10 @@ static void manage_node_communication(      const char *ip,
 
         if (FD_ISSET(tcp_sock_fd, &readyfds)){   // connection request received from client
 
-            int new_sock_fd = accept(tcp_sock_fd, (struct sockaddr *)&tcp_client_addr, &addr_len);
+            struct sockaddr_in new_tcp_client_addr;
+            socklen_t addr_len = sizeof(new_tcp_client_addr);
+
+            int new_sock_fd = accept(tcp_sock_fd, (struct sockaddr *)&new_tcp_client_addr, &addr_len);
 
             if (new_sock_fd < 0){
                 printf("Accept Error: %d\n", errno);
@@ -536,7 +541,7 @@ static void manage_node_communication(      const char *ip,
                 } else {
 
                     // deserialize the buffer into the app_msg_t structure
-                    app_msg_t *recv_msg = deserialize_app_msg(buffer, BUFFER_SIZE);
+                    app_msg_t *recv_msg = deserialize_app_msg(buffer);
                     
                     // Print sender details
                     printf("Message received from %s:%d\n", inet_ntoa(sender_addr.sin_addr), ntohs(sender_addr.sin_port));
@@ -608,7 +613,7 @@ static void manage_node_communication(      const char *ip,
                             }
 
                             // send data
-                            size_t sent_recv_bytes = send(sockfd, buffer, serialized_size, 0);
+                            int sent_recv_bytes = send(sockfd, buffer, serialized_size, 0);
 
                             if (sent_recv_bytes < 0){
                                 perror("WHAT_X send failed.\n");
@@ -636,7 +641,7 @@ static void manage_node_communication(      const char *ip,
                             }
 
                             // send message
-                            size_t sent_bytes = sendto(udp_sock_fd, buffer, serialized_size, 0, (struct sockaddr *)&receiver_addr, sizeof(receiver_addr));
+                            int sent_bytes = sendto(udp_sock_fd, buffer, serialized_size, 0, (struct sockaddr *)&receiver_addr, sizeof(receiver_addr));
 
                             if (sent_bytes < 0){
                                 perror("PUT_FORWARD send failed\n");
@@ -698,7 +703,7 @@ static void manage_node_communication(      const char *ip,
                             }
 
                             // send data
-                            size_t sent_recv_bytes = send(sockfd, buffer, serialized_size, 0);
+                            int sent_recv_bytes = send(sockfd, buffer, serialized_size, 0);
 
                             if (sent_recv_bytes < 0){
                                 perror("GET_REPLY_X send failed.\n");
@@ -771,7 +776,7 @@ static void manage_node_communication(      const char *ip,
                 printf("Server received %zu bytes from client %s:%u via TCP\n", received_len, inet_ntoa(sender_addr.sin_addr), ntohs(sender_addr.sin_port));
 
                 // deserialize the buffer into the app_msg_t structure
-                app_msg_t *recv_msg = deserialize_app_msg(buffer, BUFFER_SIZE);
+                app_msg_t *recv_msg = deserialize_app_msg(buffer);
 
                 // print message to console
                 printf("Received Message:\n");
@@ -871,6 +876,11 @@ static void manage_node_communication(      const char *ip,
                     key = get_valid_unsigned_int("Enter key: ");
                     value = get_valid_unsigned_int("Enter value: ");
 
+                    if (key == UINT_MAX || value == UINT_MAX){
+                        fprintf("Maximum number of retries reached...follow the instructions explicitly. Terminating request. Try again...\n");
+                        continue;
+                    }
+
                     if (node_hash(key) == node_id){    // store key and value in own hash table
                     
                         insert(hash_table, &key, &value);
@@ -910,6 +920,11 @@ static void manage_node_communication(      const char *ip,
                 } else if (strncmp(input, "GET", 3) == 0){
                     
                     key = get_valid_unsigned_int("Enter key: ");
+
+                    if (key == UINT_MAX){
+                        fprintf("Maximum number of retries reached...follow the instructions explicitly. Terminating request. Try again...\n");
+                        continue;
+                    }
 
                     if (node_hash(key) == node_id){ // if this node is holding the key specified in the GET request from console
 
