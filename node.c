@@ -103,10 +103,10 @@ static HT_Node *create_node(unsigned int key, unsigned int value){
 }
 
 static void insert(HashTable *table, const unsigned int *key, const unsigned int *value){
-    unsigned int index = table_hash(key);
+    unsigned int index = table_hash((unsigned int)*key);
 
     // create the new node
-    HT_Node *new_node = create_node(key, value);
+    HT_Node *new_node = create_node((unsigned int)*key, (unsigned int)*value);
 
     // if the current bucket doesn't hold any key-value pair
     if (table->buckets[index] == NULL){
@@ -121,13 +121,13 @@ static void insert(HashTable *table, const unsigned int *key, const unsigned int
 }
 
 static unsigned int search(HashTable *table, const unsigned int *key){
-    unsigned int index = table_hash(key);
+    unsigned int index = table_hash((unsigned int)*key);
 
     HT_Node *current = table->buckets[index];
 
     while (current != NULL){
-        if (current->key == key){
-            return current->value;
+        if (*(current->key) == *key){
+            return *current->value;
         }
         current = current->next;
     }
@@ -135,18 +135,18 @@ static unsigned int search(HashTable *table, const unsigned int *key){
 }
 
 static void delete(HashTable *table, const unsigned int *key){
-    unsigned int index = table_hash(key);
+    unsigned int index = table_hash((unsigned int)*key);
 
     HT_Node *current = table->buckets[index];
     HT_Node *prev = NULL;
 
-    while (current != NULL && current->key != key){ // search till NULL or key is found
+    while (current != NULL && *(current->key) != *key){ // search till NULL or key is found
         prev = current;
         current = current->next;
     }
 
     if (current == NULL){ // didn't find it
-        printf("Key not found : %s\n", key);
+        printf("Key not found : %i\n", (unsigned int)*key);
         return;
     }
 
@@ -159,7 +159,7 @@ static void delete(HashTable *table, const unsigned int *key){
     free(current->key);
     free(current->value);
     free(current);
-    printf("Key deleted: %s`n", key);
+    printf("Key deleted: %i`n", (unsigned int)*key);
 
     return;
 }
@@ -238,11 +238,11 @@ static unsigned int get_valid_unsigned_int(const char* prompt){
         unsigned long value = strtoul(input, &endptr, 10);
 
         // check if the input is a valid unsigned integer
-        if (*endptr == '\0' && value <= UINT_MAX){
+        if (*endptr == '\0' && value <= UINT_MAX && value > 0){
             return (unsigned int)value;
         }
 
-        fprintf(stderr, "Invalid input. Please enter a positive number.\n");
+        fprintf(stderr, "Invalid input. Please enter a number > 0.\n");
         retries++;
     }
 }
@@ -318,6 +318,7 @@ app_msg_t *deserialize_app_msg(const char* buffer, size_t buffer_size){
 
     unsigned int tcp_net;
     memcpy(&tcp_net, buffer + offset, sizeof(tcp_net));                                     // tcp port
+    message->tcp_port = ntohl(tcp_net);
     offset += sizeof(tcp_net);
 
     return message;
@@ -472,13 +473,16 @@ static void manage_node_communication(      const char *ip,
     FD_SET(tcp_sock_fd, &masterfds);
     FD_SET(0, &masterfds);
 
+    int max_fd = udp_sock_fd > tcp_sock_fd ? udp_sock_fd : tcp_sock_fd;
+
+    unsigned int key = 0, value = 0;
+
     while(1){
 
         readyfds = masterfds;   // copy master set of FDs (select will remove any that aren't "ready") into set of ready FDs for select to filter through.
 
-        printf("Blocked on select system call...\n");
+        printf("Waiting for input (PUT/GET) or TCP/UDP socket to ready...\n");
 
-        int max_fd = udp_sock_fd > tcp_sock_fd ? udp_sock_fd : tcp_sock_fd;
         select(max_fd + 1, &readyfds, NULL, NULL, NULL);
 
         /*****************************************************************/
@@ -487,19 +491,24 @@ static void manage_node_communication(      const char *ip,
 
         if (FD_ISSET(tcp_sock_fd, &readyfds)){   // connection request received from client
 
-            accept(tcp_sock_fd, (struct sockaddr *)&tcp_client_addr, &addr_len);
+            int new_sock_fd = accept(tcp_sock_fd, (struct sockaddr *)&tcp_client_addr, &addr_len);
 
-            if (tcp_comm_sock_fd < 0){
+            if (new_sock_fd < 0){
                 printf("Accept Error: %d\n", errno);
+                exit(0);
+            }
+
+            if (new_sock_fd == 0){
+                fprintf(stderr, "I think this is an error. FD = 0 is reserved for stdin so the new socket fd should not be 0...");
                 exit(0);
             }
 
             printf("Connection accepted from client: %s:%u\n", inet_ntoa(tcp_client_addr.sin_addr), ntohs(tcp_client_addr.sin_port));
 
-            // add the new connectino socket to the active set
-            FD_SET(tcp_comm_sock_fd, &masterfds);
-            if (tcp_comm_sock_fd > max_fd){
-                max_fd = tcp_comm_sock_fd;  // update the max file descriptor
+            // add the new connection socket to the active set
+            FD_SET(new_sock_fd, &masterfds);
+            if (new_sock_fd > max_fd){
+                max_fd = new_sock_fd;  // update the max file descriptor
             }
         } 
 
@@ -508,7 +517,7 @@ static void manage_node_communication(      const char *ip,
         /*****************************************************************/
 
         // loop through all FDs
-        for (int fd = 0; fd <= max_fd; fd++){
+        for (int fd = 1; fd <= max_fd; fd++){
             
             /*** UDP COMMUNICATION ***/
 
@@ -522,12 +531,15 @@ static void manage_node_communication(      const char *ip,
 
                 if (received_len < 0){
                     perror("Error receiving data\n");
-                } else if (received_len != BUFFER_SIZE){
-                    printf("Invalid message size: %zd bytes (expected %zu bytes)\n");
+                } else if (received_len > BUFFER_SIZE){
+                    printf("Invalid message size: %zd bytes (expected %i bytes)\n", received_len, BUFFER_SIZE);
                 } else {
 
                     // deserialize the buffer into the app_msg_t structure
                     app_msg_t *recv_msg = deserialize_app_msg(buffer, BUFFER_SIZE);
+                    
+                    // Print sender details
+                    printf("Message received from %s:%d\n", inet_ntoa(sender_addr.sin_addr), ntohs(sender_addr.sin_port));
 
                     // print to console
                     printf("Received Message:\n");
@@ -536,8 +548,6 @@ static void manage_node_communication(      const char *ip,
                     printf("  Value:     %u\n", recv_msg->value);
                     printf("  IP Addr:   %s\n", inet_ntoa(*(struct in_addr *)&recv_msg->ip_addr));
                     printf("  TCP Port:  %u\n", recv_msg->tcp_port);
-                    // Print sender details
-                    printf("Message received from %s:%d\n", inet_ntoa(sender_addr.sin_addr), ntohs(sender_addr.sin_port));
 
                     // process message
                     if (recv_msg->msg_id == PUT_FORWARD){   // PUT_FORWARD msg received from another node
@@ -553,7 +563,7 @@ static void manage_node_communication(      const char *ip,
                             struct sockaddr_in dest;
                             memset(&dest, 0, sizeof(dest));
                             dest.sin_family = AF_INET;
-                            dest.sin_port = htons(tcp_port);
+                            dest.sin_port = htons(recv_msg->tcp_port);
 
                             // Resolve the hostname to an IP address
                             char ip_str[INET_ADDRSTRLEN];
@@ -576,6 +586,7 @@ static void manage_node_communication(      const char *ip,
                             if (connect(sockfd, (struct sockaddr *)&dest, sizeof(dest)) < 0) {
                                 perror("Connection failed");
                                 close(sockfd);
+                                FD_CLR(sockfd, &masterfds); // clear from fd set
                                 exit(EXIT_FAILURE);
                             }
 
@@ -588,7 +599,7 @@ static void manage_node_communication(      const char *ip,
                                 max_fd = sockfd;  // Update the max file descriptor
                             }
 
-                            // prepare data
+                            // prepare data WHAT_X
                             app_msg_t *what_x = create_what_x(recv_msg->key);
                             size_t serialized_size = serialize_app_msg(what_x, buffer, BUFFER_SIZE);
                             if (serialized_size > BUFFER_SIZE){
@@ -597,15 +608,15 @@ static void manage_node_communication(      const char *ip,
                             }
 
                             // send data
-                            ssize_t sent_recv_bytes = sendto(sockfd, buffer, serialized_size, 0, (struct sockaddr *)&dest, sizeof(struct sockaddr));
+                            size_t sent_recv_bytes = send(sockfd, buffer, serialized_size, 0);
 
                             if (sent_recv_bytes < 0){
                                 perror("WHAT_X send failed.\n");
                             } else {
-                                printf("WHAT_X sent to %s:%u. %d bytes sent...\n", recv_msg->ip_addr, recv_msg->tcp_port, sent_recv_bytes);
+                                printf("WHAT_X sent to %s:%u. %zu bytes sent...\n", ip_str, recv_msg->tcp_port, sent_recv_bytes);
                             }
 
-                            free_app_msg(what_x);   // free allocated memory
+                            free(what_x);   // free allocated memory
 
                         } else {    // PUT_FORWARD to successor node over UDP
 
@@ -625,7 +636,7 @@ static void manage_node_communication(      const char *ip,
                             }
 
                             // send message
-                            ssize_t sent_bytes = sendto(udp_sock_fd, buffer, serialized_size, 0, (struct sockaddr *)&receiver_addr, sizeof(receiver_addr));
+                            size_t sent_bytes = sendto(udp_sock_fd, buffer, serialized_size, 0, (struct sockaddr *)&receiver_addr, sizeof(receiver_addr));
 
                             if (sent_bytes < 0){
                                 perror("PUT_FORWARD send failed\n");
@@ -646,7 +657,7 @@ static void manage_node_communication(      const char *ip,
                             struct sockaddr_in dest;
                             memset(&dest, 0, sizeof(dest));
                             dest.sin_family = AF_INET;
-                            dest.sin_port = htons(tcp_port);
+                            dest.sin_port = htons(recv_msg->tcp_port);
 
                             // Resolve the hostname to an IP address
                             char ip_str[INET_ADDRSTRLEN];
@@ -669,20 +680,17 @@ static void manage_node_communication(      const char *ip,
                             if (connect(sockfd, (struct sockaddr *)&dest, sizeof(dest)) < 0) {
                                 perror("Connection failed");
                                 close(sockfd);
+                                FD_CLR(sockfd, &masterfds); // clear from fd set
                                 exit(EXIT_FAILURE);
                             }
 
                             printf("Connection established with server: %s:%u\n",
                                 inet_ntoa(dest.sin_addr), ntohs(dest.sin_port));
 
-                            // Add the new connection socket to the active FD set
-                            FD_SET(sockfd, &masterfds);
-                            if (sockfd > max_fd) {
-                                max_fd = sockfd;  // Update the max file descriptor
-                            }
+                            /*NOTE: No need to add 'sockfd' to the 'masterfds' because only this one GET_REPLY_X message needs to be sent.*/
 
                             // prepare data
-                            app_msg_t *get_reply_x = create_get_reply_x(recv_msg->key, search(hash_table, recv_msg->key));
+                            app_msg_t *get_reply_x = create_get_reply_x(recv_msg->key, search(hash_table, &recv_msg->key));
                             size_t serialized_size = serialize_app_msg(get_reply_x, buffer, BUFFER_SIZE);
                             if (serialized_size > BUFFER_SIZE){
                                 fprintf(stderr, "Serialized response for GET_REPLY_X exceeds buffer size\n");
@@ -690,14 +698,19 @@ static void manage_node_communication(      const char *ip,
                             }
 
                             // send data
-                            ssize_t sent_recv_bytes = sendto(sockfd, buffer, serialized_size, 0, (struct sockaddr *)&dest, sizeof(struct sockaddr));
+                            size_t sent_recv_bytes = send(sockfd, buffer, serialized_size, 0);
 
                             if (sent_recv_bytes < 0){
                                 perror("GET_REPLY_X send failed.\n");
                             } else {
-                                printf("GET_REPLY_X sent to %s:%u. %d bytes sent...\n", recv_msg->ip_addr, recv_msg->tcp_port, sent_recv_bytes);
+                                printf("GET_REPLY_X sent to %s:%u. %zu bytes sent...\n", ip_str, recv_msg->tcp_port, sent_recv_bytes);
                             }
 
+                            // no need to continue communication after GET_REPLY_X
+                            printf("Closing connection with %s:%u\n", inet_ntoa(dest.sin_addr), ntohs(dest.sin_port));
+                            close(sockfd);
+                            FD_CLR(sockfd, &masterfds); // clear from fd set
+                            
                             free(get_reply_x);  // free allocated memory
 
                         } else {    // GET_FORWARD to successor node over UDP
@@ -749,10 +762,13 @@ static void manage_node_communication(      const char *ip,
                 socklen_t addr_len = sizeof(sender_addr);
 
                 // get message
-                ssize_t received_len = recvfrom(fd, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&sender_addr, &addr_len);
+                size_t received_len = recv(fd, buffer, BUFFER_SIZE, 0);
+                if (getpeername(fd, (struct sockaddr *)&sender_addr, &addr_len) != 0){
+                    fprintf(stderr, "Debug: getpeername() failed. Sender info was not resolved...\n");
+                }
 
                 // print info to console
-                printf("Server received %d bytes from client %s: %u\n", received_len, inet_ntoa(sender_addr.sin_addr), ntohs(sender_addr.sin_port));
+                printf("Server received %zu bytes from client %s:%u via TCP\n", received_len, inet_ntoa(sender_addr.sin_addr), ntohs(sender_addr.sin_port));
 
                 // deserialize the buffer into the app_msg_t structure
                 app_msg_t *recv_msg = deserialize_app_msg(buffer, BUFFER_SIZE);
@@ -768,17 +784,18 @@ static void manage_node_communication(      const char *ip,
                 // if server receives emtpy message from client, server may close the conection and wait for fresh new connection from client.
                 if (received_len == 0){
                     close(fd);
+                    FD_CLR(fd, &masterfds); // clear from fd set
                     break;
                 }
 
                 // handle tcp related messages
-                if (recv_msg->msg_id ==  WHAT_X){ // send back PUT_REPLY_X
+                if (recv_msg->msg_id == WHAT_X){ // send back PUT_REPLY_X
 
                     // double check we have the key value pair
-                    if (search(hash_table, recv_msg->key) != NULL){   // if we do
+                    if (recv_msg->key == key){   // if we do
                         
                         // prepare data
-                        app_msg_t *put_reply_x = create_put_reply_x(recv_msg->key, search(hash_table, recv_msg->value));
+                        app_msg_t *put_reply_x = create_put_reply_x(recv_msg->key, value);
                         size_t serialized_size = serialize_app_msg(put_reply_x, buffer, BUFFER_SIZE);
                         if (serialized_size > BUFFER_SIZE){
                             fprintf(stderr, "Serialized response for PUT_REPLY_X exceeds buffer size\n");
@@ -786,7 +803,7 @@ static void manage_node_communication(      const char *ip,
                         }
 
                         // send data
-                        int sent_recv_bytes = sendto(fd, buffer, serialized_size, 0, (struct sockaddr *)&sender_addr, sizeof(struct sockaddr));
+                        int sent_recv_bytes = send(fd, buffer, serialized_size, 0);
 
                         if (sent_recv_bytes < 0){
                             perror("PUT_REPLY_X failed...\n");
@@ -794,22 +811,37 @@ static void manage_node_communication(      const char *ip,
                             printf("PUT_REPLY_X sent to %s:%u\n", inet_ntoa(sender_addr.sin_addr), ntohs(sender_addr.sin_port));
                         }
 
+                        printf("Closing connection with %s:%u\n", inet_ntoa(sender_addr.sin_addr), ntohs(sender_addr.sin_port));
+
+                        close(fd);  // no need to continue communication after sending PUT_REPLY_X
+                        FD_CLR(fd, &masterfds);     // clear from fd set
+
                         free(put_reply_x);  // free allocated memory
+
+                        key = 0, value = 0; // reset key and value
                     }
 
                 } else if (recv_msg->msg_id == GET_REPLY_X){
 
                     printf("GET request succeeded for Key = %i. Value = %i\n", recv_msg->key, recv_msg->value);
 
+                    printf("Closing connection with %s:%u\n", inet_ntoa(sender_addr.sin_addr), ntohs(sender_addr.sin_port));
+                    close(fd);  // no need to continue communication after receiving GET_REPLY_X
+                    FD_CLR(fd, &masterfds); // clear from fd set
+
                 } else if (recv_msg->msg_id == PUT_REPLY_X){
 
                     // double check we are the correct node
                     if (node_hash(recv_msg->key) == node_id){
-                        insert(hash_table, recv_msg->key, recv_msg->value);
+                        insert(hash_table, &recv_msg->key, &recv_msg->value);
                         printf("Inserted new key-value pair for Key = %i\n", recv_msg->key);
                     } else {
                         printf("Received PUT_REPLY_X for key = %i, but this is not the correct node for storage...\n", recv_msg->key);
                     }
+
+                    printf("Closing connection with %s:%u\n", inet_ntoa(sender_addr.sin_addr), ntohs(sender_addr.sin_port));
+                    close(fd);  // no need to continue communication after receiving PUT_REPLY_X
+                    FD_CLR(fd, &masterfds); // clear from fd set
 
                 } else {
                     perror("Invalid message type for TCP communication received...\n");
@@ -831,14 +863,17 @@ static void manage_node_communication(      const char *ip,
             char input[INPUT_BUFFER_SIZE];
             if (fgets(input, INPUT_BUFFER_SIZE, stdin) != NULL){
 
+                // remove newline character if present
+                input[strcspn(input, "\n")] = '\0';     // substitute with null
+
                 if (strncmp(input, "PUT", 3) == 0){
                     
-                    unsigned int key = get_valid_unsigned_int("Enter key: ");
-                    unsigned int value = get_valid_unsigned_int("Enter value: ");
+                    key = get_valid_unsigned_int("Enter key: ");
+                    value = get_valid_unsigned_int("Enter value: ");
 
                     if (node_hash(key) == node_id){    // store key and value in own hash table
                     
-                        insert(&hash_table, key, value);
+                        insert(hash_table, &key, &value);
                     
                     } else { // send PUT_FORWARD
 
@@ -853,7 +888,7 @@ static void manage_node_communication(      const char *ip,
                         char buffer[BUFFER_SIZE];
                         struct in_addr ip_addr;
                         inet_pton(AF_INET, ip, &ip_addr);
-                        app_msg_t *put_fwd = create_put_forward(key, ip_addr, successor_udp);
+                        app_msg_t *put_fwd = create_put_forward(key, ip_addr, tcp_port);
                         size_t serialized_size = serialize_app_msg(put_fwd, buffer, BUFFER_SIZE);
                         if (serialized_size > BUFFER_SIZE){
                             fprintf(stderr, "Serialized response for PUT_FORWARD exceeds buffer size\n");
@@ -874,11 +909,11 @@ static void manage_node_communication(      const char *ip,
 
                 } else if (strncmp(input, "GET", 3) == 0){
                     
-                    unsigned int key = get_valid_unsigned_int("Enter key: ");
+                    key = get_valid_unsigned_int("Enter key: ");
 
                     if (node_hash(key) == node_id){ // if this node is holding the key specified in the GET request from console
 
-                        printf("Value for key = %i found in memory. Value = %i", key, search(hash_table, key));
+                        printf("Value for key = %i found in memory. Value = %i", key, search(hash_table, &key));
 
                     } else { // send GET_FORWARD
 
@@ -892,8 +927,9 @@ static void manage_node_communication(      const char *ip,
                         // set up message
                         char buffer[BUFFER_SIZE];
                         struct in_addr ip_addr;
+
                         inet_pton(AF_INET, ip, &ip_addr);
-                        app_msg_t *get_fwd = create_get_forward(key, ip_addr, successor_udp);
+                        app_msg_t *get_fwd = create_get_forward(key, ip_addr, tcp_port);
                         size_t serialized_size = serialize_app_msg(get_fwd, buffer, BUFFER_SIZE);
 
                         // send message
@@ -909,13 +945,15 @@ static void manage_node_communication(      const char *ip,
                     }
 
                 } else {
-                    perror("Unknown command: \"%s\"\n");
+                    fprintf(stderr, "Unknown command: \"%s\"\n", input);
 
                     printf("Expected: \"PUT\" or \"GET\"\n");
                 }
 
             }
         }
+
+
 
     }
 }
@@ -951,8 +989,8 @@ int main(int argc, char*argv[]){
     }
 
     // check if node_id is valid
-    if (atoi(argv[5]) > 1 - NODE_COUNT){
-        printf("Nodes are to be uniquely number from 0 - %i\n", NODE_COUNT);
+    if (atoi(argv[5]) < 1 || atoi(argv[5]) > NODE_COUNT){
+        printf("Nodes are to be a unique number from 1 - %i\n", NODE_COUNT);
         return 1;
     } 
 
